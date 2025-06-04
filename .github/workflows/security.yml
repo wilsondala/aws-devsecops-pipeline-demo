@@ -23,8 +23,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Authenticate Snyk CLI
+        run: snyk auth $SNYK_TOKEN
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
       - name: Run Snyk scan
-        uses: snyk/actions/python@master
+        uses: snyk/actions/python-3.6@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
