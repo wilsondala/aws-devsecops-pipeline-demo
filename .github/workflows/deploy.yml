@@ -1,0 +1,73 @@
+name: Deploy Flask App to ECS Fargate
+
+on:
+  push:
+    branches:
+      - main  # ou master, se for o seu caso
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: flask-app-repo
+  ECS_CLUSTER: flask-ecs-cluster
+  ECS_SERVICE: flask-service
+  ECS_TASK_FAMILY: flask-task
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::202853071953:role/GITHUB_DEPLOY_ROLE  # 👈 Substitua após criar a role
+          role-session-name: deploy-session
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to ECR
+        run: |
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: Register new ECS task definition revision
+        id: task-def
+        run: |
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition ${{ env.ECS_TASK_FAMILY }})
+          NEW_DEF=$(echo $TASK_DEF | jq --arg IMAGE "$IMAGE_URI" '.taskDefinition | {
+            family,
+            networkMode,
+            containerDefinitions: [.containerDefinitions[0] | .image=$IMAGE],
+            requiresCompatibilities,
+            cpu,
+            memory,
+            executionRoleArn
+          }')
+          
+          echo "$NEW_DEF" > task-def.json
+          aws ecs register-task-definition --cli-input-json file://task-def.json > result.json
+          NEW_REV=$(cat result.json | jq -r '.taskDefinition.revision')
+          echo "revision=$NEW_REV" >> $GITHUB_OUTPUT
+
+      - name: Update ECS service with new task definition
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${env.ECS_TASK_FAMILY}:${{ steps.task-def.outputs.revision }}
