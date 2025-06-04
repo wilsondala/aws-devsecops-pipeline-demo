@@ -54,5 +54,9 @@ jobs:
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
+        with:
+          args: >
+            -Dsonar.projectKey=wilsondala_aws-devsecops-pipeline-demo
+            -Dsonar.organization=wilsondala
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
