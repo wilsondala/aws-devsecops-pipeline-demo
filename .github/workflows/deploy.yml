@@ -3,7 +3,7 @@ name: Deploy Flask App to ECS Fargate
 on:
   push:
     branches:
-      - main  # ou master, se for o seu caso
+      - main
 
 env:
   AWS_REGION: us-east-1
@@ -28,7 +28,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          role-to-assume: arn:aws:iam::202853071953:role/GITHUB_DEPLOY_ROLE  # 👈 Substitua após criar a role
+          role-to-assume: arn:aws:iam::202853071953:role/GITHUB_DEPLOY_ROLE
           role-session-name: deploy-session
           aws-region: ${{ env.AWS_REGION }}
 
@@ -70,4 +70,4 @@ jobs:
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE }} \
-            --task-definition ${env.ECS_TASK_FAMILY}:${{ steps.task-def.outputs.revision }}
+            --task-definition ${{ env.ECS_TASK_FAMILY }}:${{ steps.task-def.outputs.revision }}

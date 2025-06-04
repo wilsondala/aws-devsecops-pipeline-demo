@@ -23,32 +23,28 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Authenticate Snyk CLI
-        run: snyk auth $SNYK_TOKEN
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-
       - name: Run Snyk scan
-        uses: snyk/actions/python-3.6@master
+        uses: snyk/actions/python@master
+        with:
+          command: test
+          args: "--file=requirements.txt"
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: test --all-projects
 
       - name: Install Trivy
         run: |
           sudo apt-get update
           sudo apt-get install wget apt-transport-https gnupg lsb-release -y
           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update
           sudo apt-get install trivy -y
 
-      - name: Run Trivy FS scan
-        run: trivy fs --exit-code 0 --severity HIGH,CRITICAL .
+      - name: Run Trivy FS scan (fail on HIGH, CRITICAL)
+        run: trivy fs --exit-code 1 --severity HIGH,CRITICAL .
 
-      - name: Run Trivy config scan
-        run: trivy config --exit-code 0 --severity HIGH,CRITICAL .
+      - name: Run Trivy config scan (fail on HIGH, CRITICAL)
+        run: trivy config --exit-code 1 --severity HIGH,CRITICAL .
 
       - name: Cache SonarCloud packages
         uses: actions/cache@v3
