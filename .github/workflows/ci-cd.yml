@@ -1,0 +1,135 @@
+name: CI/CD Flask App with Security Scans
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: flask-app-repo
+  ECS_CLUSTER: flask-ecs-cluster
+  ECS_SERVICE: flask-service
+  ECS_TASK_FAMILY: flask-task
+  SONAR_PROJECT_KEY: wilsondala_aws-devsecops-pipeline-demo
+  SONAR_ORGANIZATION: wilsondala
+
+jobs:
+  security_scan:
+    name: Security Quality Gates (Snyk + Trivy + SonarCloud)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Snyk scan
+        uses: snyk/actions/python@master
+        with:
+          command: test
+          args: "--file=requirements.txt --severity-threshold=medium"
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Run Trivy FS scan (fail on HIGH, CRITICAL)
+        run: trivy fs --exit-code 1 --severity HIGH,CRITICAL .
+
+      - name: Run Trivy config scan (fail on HIGH, CRITICAL)
+        run: trivy config --exit-code 1 --severity HIGH,CRITICAL .
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        with:
+          args: >
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ env.SONAR_ORGANIZATION }}
+            -Dsonar.sources=.
+            -Dsonar.host.url=https://sonarcloud.io
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  deploy:
+    name: Build and Deploy Flask App to ECS Fargate
+    runs-on: ubuntu-latest
+    needs: security_scan
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::202853071953:role/GITHUB_DEPLOY_ROLE
+          role-session-name: deploy-session
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to ECR
+        run: |
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: Register new ECS task definition revision
+        id: task-def
+        run: |
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition ${{ env.ECS_TASK_FAMILY }})
+          NEW_DEF=$(echo "$TASK_DEF" | jq --arg IMAGE "$IMAGE_URI" '
+            .taskDefinition | {
+              family,
+              networkMode,
+              containerDefinitions: [
+                .containerDefinitions[0] |
+                .image = $IMAGE
+              ],
+              requiresCompatibilities,
+              cpu,
+              memory,
+              executionRoleArn
+            }
+          ')
+          echo "$NEW_DEF" > task-def.json
+          aws ecs register-task-definition --cli-input-json file://task-def.json > result.json
+          NEW_REV=$(jq -r '.taskDefinition.revision' result.json)
+          echo "revision=$NEW_REV" >> $GITHUB_OUTPUT
+
+      - name: Update ECS service with new task definition
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${{ env.ECS_TASK_FAMILY }}:${{ steps.task-def.outputs.revision }}
